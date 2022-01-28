@@ -113,14 +113,14 @@ mw.loader.using([
     /**
      * {{coord missing}} or {{coord}} template.
      */
-    const coord = document.querySelector("#coordinates");
+    let coord = document.querySelector("#coordinates");
 
     /**
      * Internationalization strings.
      * @type {Object}
      */
     const i18n = {
-        add: "add missing coordinates",
+        add: "add coordinates",
         edit: "edit",
         add_pre: "(",
         add_post: ")",
@@ -134,6 +134,7 @@ mw.loader.using([
         parameters: "Coordinate parameters",
         parameters_help: "Template:Coord#Coordinate parameters",
         name: "Name",
+        no_input: "Please move the marker or enter coordinates in the provided fields.",
         template_not_found: `We couldn't find the {{{{{0}}}}} template anywhere in the page. Please edit the page manually.`,
         save_error: "Something wrong happened when saving the page: {{{0}}}",
         summary_add: `Adding page coordinates ${advert}`,
@@ -340,9 +341,17 @@ mw.loader.using([
 
     /**
      * Saves the new coordinates to the most suitable template.
+     * @returns {Promise<boolean>}
      */
     async function saveToCoordTemplate() {
         await parsoidStartup();
+
+        if (current.lat == null || current.lon == null) {
+            OO.ui.alert(
+                i18n.no_input
+            );
+            return false;
+        }
 
         if (current.fromMissing) {
             const target = parsoidDocument.document.querySelector("#coordinates.coord-missing[data-mw]");
@@ -351,7 +360,7 @@ mw.loader.using([
                     i18n.template_not_found
                         .replace("{{{0}}}", templates.coord_missing.replace(/^Template:/, ""))
                 );
-                return;
+                return false;
             }
 
             /** @type {{parts: any[]}} */
@@ -381,7 +390,7 @@ mw.loader.using([
                     i18n.template_not_found
                         .replace("{{{0}}}", templates.coord.replace(/^Template:/, ""))
                 );
-                return;
+                return false;
             }
 
             /** @type {{parts: any[]}} */
@@ -396,7 +405,7 @@ mw.loader.using([
 
             if (!part) {
                 OO.ui.alert(i18n.template_not_found.replace("{{{0}}}", templates.coord.replace(/^Template:/, "")));
-                return;
+                return false;
             }
 
             part.template.params = constructCoordParameters();
@@ -416,7 +425,7 @@ mw.loader.using([
                     // Before {{DEFAULTSORT}}
                     ["beforebegin", pd.querySelector("[property=\"mw:PageProp/categorydefaultsort\"]")],
                     // Before categories
-                    ["beforebegin", pd.querySelector("[rel=\"mw:PageProp/Category\"]")],
+                    ["beforebegin", pd.querySelector("[rel=\"mw:PageProp/Category\"]:not([about])")],
                     // Before stub templates
                     ["beforebegin", pd.querySelector(".stub")],
                     // After {{authority control}}
@@ -429,9 +438,6 @@ mw.loader.using([
                     ["afterend", last(pd.querySelectorAll(".navbox"))],
                     // After the succession box
                     ["afterend", last(pd.querySelectorAll(".succession-box"))],
-                    // Before {{Improve categories}}. This is placed at the very end since this template
-                    // is sometimes used at the start of the page, rather than at the end.
-                    ["beforebegin", pd.querySelector(".box-Improve_categories")],
                     // The very bottom of the page.
                     ["beforeend", last(pd.querySelectorAll("section"))]
                 ];
@@ -459,12 +465,13 @@ mw.loader.using([
                 }]
             }));
 
-            parsoidDocument.findParsoidNode(bestSpot[1]).insertAdjacentElement(bestSpot[0], template);
+            (parsoidDocument.findParsoidNode(bestSpot[1]) || bestSpot[1])
+                .insertAdjacentElement(bestSpot[0], template);
         }
 
         const wikitext = await parsoidDocument.toWikitext();
 
-        await api.postWithEditToken({
+        return api.postWithEditToken({
             action: "edit",
             format: "json",
             title: mw.config.get("wgPageName"),
@@ -472,7 +479,7 @@ mw.loader.using([
             formatversion: "2",
             text: wikitext,
             summary: current.fromMissing ? i18n.summary_add : i18n.summary_modify
-        });
+        }).then(() => true);
     }
 
     /**
@@ -506,6 +513,8 @@ mw.loader.using([
         function updateDecimalFields(lat, lon) {
             latDecimal.setValue(lat.toFixed(4));
             lonDecimal.setValue(lon.toFixed(4));
+            latDecimal.setValidityFlag();
+            lonDecimal.setValidityFlag();
         }
 
         /**
@@ -568,6 +577,12 @@ mw.loader.using([
             lonDMSMinute.setValue(lonMinute);
             lonDMSSecond.setValue(lonSecond);
             lonDMSDirection.setValue(lonSign === -1 ? "W" : "E");
+            [
+                latDMSDegree, latDMSMinute, latDMSSecond, latDMSDirection,
+                lonDMSDegree, lonDMSMinute, lonDMSSecond, lonDMSDirection
+            ].forEach((textInput) => {
+                textInput.setValidityFlag();
+            });
         }
         /**
          * Updates the map and decimal fields from the DMS values.
@@ -729,9 +744,11 @@ mw.loader.using([
             coordSave.setDisabled(true);
             popupWidget.setDisabled(true);
             try {
-                await saveToCoordTemplate();
-                popupWidget.toggle(false);
-                window.location.reload();
+                const success = await saveToCoordTemplate();
+                if (success) {
+                    popupWidget.toggle(false);
+                    window.location.reload();
+                }
             } catch (e) {
                 OO.ui.alert(i18n.save_error.replace("{{{0}}}", e.message));
                 console.error(e);
@@ -775,7 +792,10 @@ mw.loader.using([
         });
 
         map = L.map(mapElement).setView([0, 0], 2);
-        popupWidget.on("ready", () => map.invalidateSize());
+        popupWidget.on("ready", () => {
+            coord.classList.toggle("coordinator-loading", false);
+            map.invalidateSize();
+        });
         popupWidget.on("toggle", () => map.invalidateSize());
 
         L.tileLayer(tileServer.url, {
@@ -879,6 +899,7 @@ mw.loader.using([
             loadTemplateAliases()
         ]);
 
+        coord.classList.toggle("coordinator-loading", true);
         if (window.ParsoidDocument == null)
             await new Promise((res) => { document.addEventListener("parsoidDocument:load", res); });
 
@@ -887,20 +908,36 @@ mw.loader.using([
     }
 
     // ============================== INITIALIZE ==============================
-    if (coord !== null) {
-        current.fromMissing = coord.classList.contains("coord-missing");
+    const newCoord = coord == null;
+    if (newCoord) {
+        // Generate "coord-missing" element for detection.
+        coord = document.createElement("span");
+        coord.setAttribute("id", "coordinates");
+        coord.classList.add("coord-missing");
 
+        document.querySelector(".mw-parser-output").appendChild(coord);
+        current.fromMissing = false;
+    } else {
+        current.fromMissing = coord.classList.contains("coord-missing");
+    }
+
+    mw.hook("wikipage.content").add(() => {
         const coord_a = document.createElement("a");
         coord_a.setAttribute("href", "javascript:void(0)");
         coord_a.addEventListener("click", () => {
             openEditingPopup();
         });
-        coord_a.innerText = current.fromMissing ? i18n.add : i18n.edit;
+        coord_a.innerText = current.fromMissing ? i18n.add : (newCoord ? i18n.add : i18n.edit);
 
         coord.append(" " + i18n.add_pre);
         coord.appendChild(coord_a);
         coord.append(i18n.add_post);
-    }
+    });
+
+    // noinspection JSUnusedGlobalSymbols
+    window.Coordinator = {
+        openEditingPopup: openEditingPopup
+    };
 });
 // </nowiki>
 /*
