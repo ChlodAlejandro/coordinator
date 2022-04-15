@@ -922,7 +922,16 @@ mw.loader.using([
     }
 
     mw.hook("wikipage.content").add(() => {
+        if (![0, 118].includes(mw.config.get("wgNamespaceNumber")) || mw.config.get("wgPageName") === "Main Page")
+            // Don't show except on mainspace and draftspace
+            return;
+            
+        // Don't add if already appended
+        if (document.querySelector(".mw-body-content #coordinates #coordinator"))
+            return;
+        
         const coord_a = document.createElement("a");
+        coord_a.setAttribute("id", "coordinator");
         coord_a.setAttribute("href", "javascript:void(0)");
         coord_a.addEventListener("click", () => {
             openEditingPopup();
@@ -961,3 +970,4 @@ mw.loader.using([
  *     https://creativecommons.org/licenses/by-sa/3.0
  *
  */
+ 
